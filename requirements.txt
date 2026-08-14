@@ -1,0 +1,8 @@
+numpy
+soundcard
+scipy
+SoundFile
+Pillow
+proc-tap
+pycaw
+pystray
