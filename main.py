@@ -130,6 +130,25 @@ def check_missing_deps():
     return missing
 
 
+def ensure_single_instance():
+    """防止多开: 已有实例运行时返回 False (旧实例会抢触发、干扰开关表现)"""
+    if sys.platform != "win32":
+        return True
+    try:
+        import ctypes
+        kernel32 = ctypes.windll.kernel32
+        kernel32.CreateMutexW.argtypes = [ctypes.c_void_p, ctypes.c_bool, ctypes.c_wchar_p]
+        kernel32.CreateMutexW.restype = ctypes.c_void_p
+        handle = kernel32.CreateMutexW(None, False, "RockKingdomWolfComing_SingleInstance")
+        if not handle:
+            return True
+        if kernel32.GetLastError() == 183:  # ERROR_ALREADY_EXISTS
+            return False
+        return True
+    except Exception:
+        return True
+
+
 def ensure_admin():
     """非管理员时通过 UAC 提权重启自身; 返回是否已具备管理员权限"""
     if sys.platform != "win32":
@@ -1167,9 +1186,12 @@ class App:
                  "fail": self.sfx_fail_var.get(),
                  "hit": self.sfx_hit_var.get()}.get(name, "aowu")
         disp = SOUND_FILES.get(sound, SOUND_FILES["aowu"])[0]
-        self._log(f"测试「{label}」: 闪现音效{'开' if self.flash_var.get() else '关'} + {disp} (倍速 x{rate:.2f}) 并显示图片")
+        img_on = self.image_var.get()
+        self._log(f"测试「{label}」: 闪现音效{'开' if self.flash_var.get() else '关'} + {disp} (倍速 x{rate:.2f})"
+                  + (" 并显示图片" if img_on else " (显示图片已关闭)"))
         self.player.play(rate, sound, self.flash_var.get())
-        self.flash.show(self.black_bg_var.get(), self.user_img)
+        if img_on:
+            self.flash.show(self.black_bg_var.get(), self.user_img)
 
     # ---------- 日志与事件 ----------
     def _log(self, text):
@@ -1239,6 +1261,12 @@ class App:
 
 
 def main():
+    if not ensure_single_instance():
+        try:
+            ctypes.windll.user32.MessageBoxW(None, "洛克王国之狼来了 已经在运行中\n(请查看系统托盘图标)", "提示", 0x40)
+        except Exception:
+            pass
+        sys.exit(0)
     elevated = ensure_admin()
     try:
         ctypes.windll.user32.SetProcessDPIAware()  # 截图坐标与物理像素一致
