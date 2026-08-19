@@ -5,7 +5,7 @@
 功能:
   1. 监听指定进程(游戏)的声音, 检测到 compare/success.wav、fail.wav 或 hit.wav 时触发
   2. 触发后: 先播放 play_material/flash.wav (音量 x2),
-     再以倍速(同时变调)播放 play_material/aowu.wav
+     再以倍速(同时变调)播放 play_material/狼人.wav
      倍率 = 0.3 + 0.1 * 倍率进度, 超过 4.0 后回到 0.3;
      界面显示的统计次数为真实累计, 不会被自动清零
      新的触发会打断上一次播放, 立即按新倍率从头播放
@@ -41,20 +41,19 @@ HIT_WAV = os.path.join(COMPARE_DIR, "hit.wav")
 SHINY_TRIGGER_WAV = os.path.join(COMPARE_DIR, "battle_clear_sprit.wav")   # 战斗内出异色的触发音效
 SHINY_TAG_IMG = os.path.join(COMPARE_DIR, "different_color_tag.png")      # 异色标签模板图
 FLASH_WAV = os.path.join(PLAY_DIR, "flash.wav")
-AOWU_WAV = os.path.join(PLAY_DIR, "aowu.wav")
+AOWU_WAV = os.path.join(PLAY_DIR, "狼人.wav")
 
-# 可选播放音效: 键=配置值, 值=(显示名, 文件路径)
-SOUND_FILES = {
-    "aowu": ("狼人", AOWU_WAV),
-    "kskbl": ("康神开播了", os.path.join(PLAY_DIR, "kskbl.wav")),
-    "zdjd": ("真的假的", os.path.join(PLAY_DIR, "zdjd.wav")),
-    "wkzkbl": ("我靠真开播了", os.path.join(PLAY_DIR, "wkzkbl.wav")),
-    "letgooo": ("let's gooooo", os.path.join(PLAY_DIR, "letgooo.wav")),
-    "let_it_go": ("关羽释怀の小曲", os.path.join(PLAY_DIR, "let_it_go.wav")),
-}
-SOUND_ORDER = ("aowu", "kskbl", "zdjd", "wkzkbl", "letgooo")
-# 战斗内出异色可选音效(后续新增歌曲: 在 SOUND_FILES 里加条目, 并在此追加键)
-SHINY_SOUND_ORDER = ("let_it_go", "letgooo")
+def list_play_sounds():
+    """扫描 play_material 下的音频文件(排除 flash.wav), 文件名即显示名"""
+    exts = (".wav", ".mp3", ".flac", ".ogg")
+    out = []
+    try:
+        for n in sorted(os.listdir(PLAY_DIR), key=lambda x: x.lower()):
+            if n.lower().endswith(exts) and n.lower() != os.path.basename(FLASH_WAV).lower():
+                out.append(n)
+    except OSError:
+        pass
+    return out
 AOWU_IMG = os.path.join(IMAGE_DIR, "aowu.png")   # 透明PNG, 显示时合成白底
 AOWU_IMG_JPG = os.path.join(IMAGE_DIR, "aowu.jpg")  # 旧格式回退
 ICON_PATH = os.path.join(BASE_DIR, "icon.ico")
@@ -472,7 +471,7 @@ class PlaybackManager:
         self.sound_gain = 1.0   # 音效播放音量(0~1, 界面可调)
         threading.Thread(target=self._worker, daemon=True).start()
 
-    def play(self, rate, sound="aowu", flash=True, protect_sec=0):
+    def play(self, rate, sound="狼人.wav", flash=True, protect_sec=0):
         """请求播放 (可选闪现音效 +) 选定音效(倍率 rate); 若有正在播放的音效则打断。
         protect_sec>0 时, 该次播放开始的 protect_sec 秒内不允许任何打断"""
         self.gen += 1
@@ -528,7 +527,7 @@ class PlaybackManager:
             self._nch = nch if nch >= 1 else 2
         except Exception as e:
             self.evq.put(("error", f"无法打开播放设备: {e}"))
-        for path in [FLASH_WAV] + [p for _, p in SOUND_FILES.values()]:
+        for path in [FLASH_WAV] + [os.path.join(PLAY_DIR, n) for n in list_play_sounds()]:
             if not os.path.exists(path):
                 self.evq.put(("error", f"找不到播放音频: {path}"))
                 continue
@@ -543,7 +542,7 @@ class PlaybackManager:
         if self._interrupted(gen):
             return
         seq = [(FLASH_WAV, 1.0, FLASH_GAIN)] if flash else []
-        seq.append((SOUND_FILES.get(sound, SOUND_FILES["aowu"])[1], rate, self.sound_gain))
+        seq.append((os.path.join(PLAY_DIR, sound), rate, self.sound_gain))
         for path, r, gain in seq:
             if self._interrupted(gen):
                 break
@@ -764,13 +763,36 @@ class App:
         self.hit_var = tk.BooleanVar(value=bool(settings.get("hit_on", 0)))
         self.image_var = tk.BooleanVar(value=bool(settings.get("image_on", 1)))
         self.black_bg_var = tk.BooleanVar(value=bool(settings.get("black_bg", 0)))
-        self.sfx_success_var = tk.StringVar(value=str(settings.get("sfx_success", "aowu")))
-        self.sfx_fail_var = tk.StringVar(value=str(settings.get("sfx_fail", "aowu")))
-        self.sfx_hit_var = tk.StringVar(value=str(settings.get("sfx_hit", "aowu")))
+        self.play_sounds = list_play_sounds()
+        # 下拉框显示名(不带后缀) -> 实际文件名
+        self._sound_by_disp = {}
+        disps = []
+        for n in self.play_sounds:
+            d = os.path.splitext(n)[0]
+            while d in self._sound_by_disp:   # 重名时保留完整文件名区分
+                d = n
+            self._sound_by_disp[d] = n
+            disps.append(d)
+        self.play_sound_disps = disps
+
+        def pick_sfx(key, default):
+            v = str(settings.get(key, ""))
+            if v in self._sound_by_disp:
+                return v
+            for d, fn in self._sound_by_disp.items():   # 兼容旧值(带后缀/旧键)
+                if fn == v:
+                    return d
+            if default in self._sound_by_disp:
+                return default
+            return self.play_sound_disps[0] if self.play_sound_disps else ""
+
+        self.sfx_success_var = tk.StringVar(value=pick_sfx("sfx_success", "狼人"))
+        self.sfx_fail_var = tk.StringVar(value=pick_sfx("sfx_fail", "狼人"))
+        self.sfx_hit_var = tk.StringVar(value=pick_sfx("sfx_hit", "狼人"))
         self.flash_var = tk.BooleanVar(value=bool(settings.get("flash_on", 1)))
         self.rate_lock_var = tk.BooleanVar(value=bool(settings.get("rate_lock", 0)))
         self.shiny_var = tk.BooleanVar(value=bool(settings.get("shiny_on", 1)))
-        self.sfx_shiny_var = tk.StringVar(value=str(settings.get("sfx_shiny", "let_it_go")))
+        self.sfx_shiny_var = tk.StringVar(value=pick_sfx("sfx_shiny", "关羽小曲"))
 
         self.shared = {"success_on": self.success_var.get(),
                        "fail_on": self.fail_var.get(),
@@ -838,25 +860,24 @@ class App:
         cond = ttk.LabelFrame(frm, text="音效设置", padding=8)
         cond.grid(row=row, column=0, columnspan=2, sticky="ew", pady=(8, 4))
 
-        def radio_row(r, text, chk_var, sfx_var, order):
+        def combo_row(r, text, chk_var, sfx_var):
             ttk.Checkbutton(cond, text=text, variable=chk_var).grid(row=r, column=0, sticky="w", padx=(0, 8))
-            rbs = []
-            for ci, val in enumerate(order):
-                rb = ttk.Radiobutton(cond, text=SOUND_FILES[val][0], value=val, variable=sfx_var)
-                rb.grid(row=r, column=1 + ci, sticky="w", padx=(0, 4))
-                rbs.append(rb)
+            cb = ttk.Combobox(cond, textvariable=sfx_var, values=self.play_sound_disps,
+                              state="readonly", width=18)
+            cb.grid(row=r, column=1, sticky="w")
+            ttk.Button(cond, text="试听", width=5,
+                       command=lambda: self._preview_sfx(sfx_var.get())).grid(row=r, column=2, sticky="w", padx=(6, 0))
+            ttk.Button(cond, text="中断", width=5, command=self._on_interrupt).grid(row=r, column=3, sticky="w", padx=(4, 0))
 
             def sync(*_):
-                st = ["!disabled"] if chk_var.get() else ["disabled"]
-                for rb in rbs:
-                    rb.state(st)
+                cb.state(["!disabled"] if chk_var.get() else ["disabled"])
             chk_var.trace_add("write", sync)
             sync()
 
-        radio_row(0, "捕捉成功", self.success_var, self.sfx_success_var, SOUND_ORDER)
-        radio_row(1, "捕捉失败", self.fail_var, self.sfx_fail_var, SOUND_ORDER)
-        radio_row(2, "球命中", self.hit_var, self.sfx_hit_var, SOUND_ORDER)
-        radio_row(3, "战斗内出异色", self.shiny_var, self.sfx_shiny_var, SHINY_SOUND_ORDER)
+        combo_row(0, "捕捉成功", self.success_var, self.sfx_success_var)
+        combo_row(1, "捕捉失败", self.fail_var, self.sfx_fail_var)
+        combo_row(2, "球命中", self.hit_var, self.sfx_hit_var)
+        combo_row(3, "战斗内出异色", self.shiny_var, self.sfx_shiny_var)
 
         row += 1
         rate_frm = ttk.LabelFrame(frm, text="倍率设置", padding=8)
@@ -959,9 +980,9 @@ class App:
             return
         if score > IMG_MATCH_THRESHOLD:
             sound = self.sfx_shiny_var.get()
-            disp = SOUND_FILES.get(sound, SOUND_FILES["let_it_go"])[0]
+            disp = sound
             self._log(f"检测到异色! (图片匹配度 {score:.2f}), 播放 {disp} ({SHINY_PROTECT_SEC:g}秒内禁止打断)")
-            self.player.play(self._current_rate(), sound, self.flash_var.get(),
+            self.player.play(self._current_rate(), self._sound_file(sound), self.flash_var.get(),
                              protect_sec=SHINY_PROTECT_SEC)
         else:
             self._log(f"截图检测完成, 未发现异色 (匹配度 {score:.2f})")
@@ -1004,6 +1025,14 @@ class App:
         self._shiny_pending = True
         self._log("测试「战斗内出异色」: 1秒后截图检测异色")
         self.root.after(1000, self._check_shiny)
+
+    def _sound_file(self, disp):
+        """下拉框显示名 -> 实际文件名"""
+        return self._sound_by_disp.get(disp, disp)
+
+    def _preview_sfx(self, disp):
+        self._log(f"试听: {disp}")
+        self.player.play(1.0, self._sound_file(disp), False)   # 原速试听, 不带闪现音效
 
     def _on_interrupt(self):
         if self.player.stop():
@@ -1174,8 +1203,8 @@ class App:
         self._update_count_label()
         sound = {"success": self.sfx_success_var.get(),
                  "fail": self.sfx_fail_var.get(),
-                 "hit": self.sfx_hit_var.get()}.get(name, "aowu")
-        self.player.play(rate, sound, self.flash_var.get())
+                 "hit": self.sfx_hit_var.get()}.get(name, "狼人")
+        self.player.play(rate, self._sound_file(sound), self.flash_var.get())
         if self.image_var.get():
             self.flash.show(self.black_bg_var.get(), self.user_img)
 
@@ -1184,12 +1213,12 @@ class App:
         label = {"success": "捕捉成功", "fail": "捕捉失败", "hit": "球命中"}.get(name, name)
         sound = {"success": self.sfx_success_var.get(),
                  "fail": self.sfx_fail_var.get(),
-                 "hit": self.sfx_hit_var.get()}.get(name, "aowu")
-        disp = SOUND_FILES.get(sound, SOUND_FILES["aowu"])[0]
+                 "hit": self.sfx_hit_var.get()}.get(name, "狼人")
+        disp = sound
         img_on = self.image_var.get()
         self._log(f"测试「{label}」: 闪现音效{'开' if self.flash_var.get() else '关'} + {disp} (倍速 x{rate:.2f})"
                   + (" 并显示图片" if img_on else " (显示图片已关闭)"))
-        self.player.play(rate, sound, self.flash_var.get())
+        self.player.play(rate, self._sound_file(sound), self.flash_var.get())
         if img_on:
             self.flash.show(self.black_bg_var.get(), self.user_img)
 
