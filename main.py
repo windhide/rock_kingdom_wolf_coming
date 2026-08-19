@@ -49,11 +49,12 @@ SOUND_FILES = {
     "kskbl": ("康神开播了", os.path.join(PLAY_DIR, "kskbl.wav")),
     "zdjd": ("真的假的", os.path.join(PLAY_DIR, "zdjd.wav")),
     "wkzkbl": ("我靠真开播了", os.path.join(PLAY_DIR, "wkzkbl.wav")),
+    "letgooo": ("let's gooooo", os.path.join(PLAY_DIR, "letgooo.wav")),
     "let_it_go": ("关羽释怀の小曲", os.path.join(PLAY_DIR, "let_it_go.wav")),
 }
-SOUND_ORDER = ("aowu", "kskbl", "zdjd", "wkzkbl")
+SOUND_ORDER = ("aowu", "kskbl", "zdjd", "wkzkbl", "letgooo")
 # 战斗内出异色可选音效(后续新增歌曲: 在 SOUND_FILES 里加条目, 并在此追加键)
-SHINY_SOUND_ORDER = ("let_it_go",)
+SHINY_SOUND_ORDER = ("let_it_go", "letgooo")
 AOWU_IMG = os.path.join(IMAGE_DIR, "aowu.png")   # 透明PNG, 显示时合成白底
 AOWU_IMG_JPG = os.path.join(IMAGE_DIR, "aowu.jpg")  # 旧格式回退
 ICON_PATH = os.path.join(BASE_DIR, "icon.ico")
