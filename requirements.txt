@@ -1,8 +1,12 @@
+# 运行依赖
 numpy
-soundcard
 scipy
+soundcard
 SoundFile
 Pillow
 proc-tap
 pycaw
 pystray
+
+# 打包依赖 (仅构建 exe 时需要)
+pyinstaller
