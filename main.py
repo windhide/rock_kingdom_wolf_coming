@@ -38,6 +38,7 @@ IMAGE_DIR = os.path.join(BASE_DIR, "images")
 SUCCESS_WAV = os.path.join(COMPARE_DIR, "success.wav")
 FAIL_WAV = os.path.join(COMPARE_DIR, "fail.wav")
 HIT_WAV = os.path.join(COMPARE_DIR, "hit.wav")
+HIT2_WAV = os.path.join(COMPARE_DIR, "hit2.wav")   # 球命中的第二个模板, 任一命中即触发
 SHINY_TRIGGER_WAV = os.path.join(COMPARE_DIR, "battle_clear_sprit.wav")   # 战斗内出异色的触发音效
 SHINY_TAG_IMG = os.path.join(COMPARE_DIR, "different_color_tag.png")      # 异色标签模板图
 FLASH_WAV = os.path.join(PLAY_DIR, "flash.wav")
@@ -63,7 +64,8 @@ SAMPLE_RATE = 48000      # 采集采样率
 MATCH_RATE = 16000       # 匹配采样率(降采样以加快匹配, 8kHz 带宽足够识别音效)
 CHUNK_SEC = 0.1          # 每次采集时长(秒)
 BUFFER_SEC = 6.0         # 匹配缓冲区时长(秒), 需大于比对音频长度
-THRESHOLD = 0.45         # 匹配阈值(波形/频谱取较高者) 0~1: 越大越严格(误触发少, 但可能漏检)
+THRESHOLD = 0.50         # 匹配阈值(波形/频谱取较高者) 0~1: 越大越严格(误触发少, 但可能漏检)
+HIT_THRESHOLD = 0.4      # 球命中专用阈值(更宽松, 三个模板更容易命中)
 MAX_CORR = 200.0         # 相关度超过该值视为异常, 不做任何操作
 DEBOUNCE_SEC = 0.8       # 触发后冷却(秒), 防止同一音效被连续计多次
 FADE_HOLD_SEC = 0.35     # 图片出现后保持时间(秒)
@@ -249,7 +251,8 @@ def load_templates(evq):
         evq.put(("detector_down", f"缺少依赖, 无法加载比对音频: {e}"))
         return {}
     templates = {}
-    for name, path in (("success", SUCCESS_WAV), ("fail", FAIL_WAV), ("hit", HIT_WAV),
+    for name, path in (("success", SUCCESS_WAV), ("fail", FAIL_WAV),
+                       ("hit", HIT_WAV), ("hit", HIT2_WAV),
                        ("shiny", SHINY_TRIGGER_WAV)):
         if not os.path.exists(path):
             evq.put(("log", f"警告: 未找到比对音频 {path}"))
@@ -260,7 +263,7 @@ def load_templates(evq):
             mono = resample_poly(mono, MATCH_RATE, sr).astype(np.float32)
         if len(mono) > MATCH_RATE * BUFFER_SEC:
             evq.put(("log", f"警告: {os.path.basename(path)} 时长超过缓冲区, 可能无法匹配"))
-        templates[name] = mono
+        templates.setdefault(name, []).append(mono)
         evq.put(("log", f"已加载模板 {name}: {os.path.basename(path)} ({len(mono) / MATCH_RATE:.2f}s)"))
     return templates
 
@@ -349,14 +352,16 @@ class AudioDetector(threading.Thread):
                 if time.monotonic() < next_ok:
                     continue
                 best = None
-                for name, tmpl in self.templates.items():
+                for name, variants in self.templates.items():
                     if not self.shared.get(f"{name}_on", True):
                         continue
-                    c = normalized_max_corr(buf, tmpl)
-                    s = spectral_score(buf, tmpl)
-                    score = max(c, s)
-                    if score > THRESHOLD and (best is None or score > best[1]):
-                        best = (name, c, s, score)
+                    th = HIT_THRESHOLD if name == "hit" else THRESHOLD
+                    for tmpl in variants:
+                        c = normalized_max_corr(buf, tmpl)
+                        s = spectral_score(buf, tmpl)
+                        score = max(c, s)
+                        if score > th and (best is None or score > best[1]):
+                            best = (name, c, s, score)
                 if best:
                     self.evq.put(("trigger", best[0], best[1], best[2]))
                     buf = np.zeros(0, dtype=np.float32)
