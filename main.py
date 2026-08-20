@@ -66,7 +66,7 @@ MATCH_RATE = 16000       # 匹配采样率(降采样以加快匹配, 8kHz 带宽
 CHUNK_SEC = 0.1          # 每次采集时长(秒)
 BUFFER_SEC = 6.0         # 匹配缓冲区时长(秒), 需大于比对音频长度
 THRESHOLD = 0.50         # 匹配阈值(波形/频谱取较高者) 0~1: 越大越严格(误触发少, 但可能漏检)
-HIT_THRESHOLD = 0.4      # 球命中专用阈值(更宽松, 三个模板更容易命中)
+HIT_THRESHOLD = 0.3      # 球命中专用阈值(实际杂音多, 更宽松以保触发率)
 MAX_CORR = 200.0         # 相关度超过该值视为异常, 不做任何操作
 DEBOUNCE_SEC = 0.8       # 触发后冷却(秒), 防止同一音效被连续计多次
 FADE_HOLD_SEC = 0.35     # 图片出现后保持时间(秒)
@@ -264,8 +264,16 @@ def load_templates(evq):
             mono = resample_poly(mono, MATCH_RATE, sr).astype(np.float32)
         if len(mono) > MATCH_RATE * BUFFER_SEC:
             evq.put(("log", f"警告: {os.path.basename(path)} 时长超过缓冲区, 可能无法匹配"))
-        templates.setdefault(name, []).append(mono)
+        templates.setdefault(name, []).append((mono, True))
         evq.put(("log", f"已加载模板 {name}: {os.path.basename(path)} ({len(mono) / MATCH_RATE:.2f}s)"))
+        if name == "hit":
+            # 球命中实际音效可能带变速/变调, 生成 ±5% 变体(仅波形匹配, 省 CPU)
+            from fractions import Fraction
+            for mult in (0.95, 1.05):
+                f = Fraction(mult).limit_denominator(40)
+                v = resample_poly(mono, f.numerator, f.denominator).astype(np.float32)
+                templates[name].append((v, False))
+                evq.put(("log", f"已加载模板 {name}: {os.path.basename(path)} @x{mult} ({len(v) / MATCH_RATE:.2f}s)"))
     return templates
 
 
@@ -357,10 +365,15 @@ class AudioDetector(threading.Thread):
                     if not self.shared.get(f"{name}_on", True):
                         continue
                     th = HIT_THRESHOLD if name == "hit" else THRESHOLD
-                    for tmpl in variants:
+                    for tmpl, with_spec in variants:
                         c = normalized_max_corr(buf, tmpl)
-                        s = spectral_score(buf, tmpl)
-                        score = max(c, s)
+                        if with_spec:
+                            s = spectral_score(buf, tmpl)
+                            # 双通道组合: 波形和频谱需同时有分量, 防止单通道弱匹配误触发
+                            score = 0.6 * max(c, s) + 0.4 * min(c, s)
+                        else:
+                            s = 0.0
+                            score = c
                         if score > th and (best is None or score > best[1]):
                             best = (name, c, s, score)
                 if best:
