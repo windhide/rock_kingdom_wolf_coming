@@ -223,22 +223,34 @@ def spectral_score(signal, template):
 
 
 def image_contains(shot, tpl_gray):
-    """判断截图中是否出现模板图片, 返回最大归一化相关度(0~1)"""
+    """判断截图中是否出现模板图片: 边缘域 + 严格窗口归一化(ZNCC), 返回最大相关度(0~1)"""
     import numpy as np
     from scipy.signal import fftconvolve
     scr = np.asarray(shot.convert("L"), dtype=np.float64)
     tpl = np.asarray(tpl_gray, dtype=np.float64)
     if tpl.shape[0] > scr.shape[0] or tpl.shape[1] > scr.shape[1]:
         return 0.0
-    t = tpl - tpl.mean()
-    s = scr - scr.mean()
-    corr = fftconvolve(s, t[::-1, ::-1], mode="valid")
-    te = float((t * t).sum())
-    ii = np.zeros((scr.shape[0] + 1, scr.shape[1] + 1))
-    ii[1:, 1:] = np.cumsum(np.cumsum(s * s, axis=0), axis=1)
+    # 转为边缘图: 对光照/颜色不敏感, 只认图案形状, 抗误报
+    gy, gx = np.gradient(scr)
+    scr = np.sqrt(gx * gx + gy * gy)
+    ty, tx = np.gradient(tpl)
+    tpl = np.sqrt(tx * tx + ty * ty)
     h, w = tpl.shape
-    win = ii[h:, w:] - ii[:-h, w:] - ii[h:, :-w] + ii[:-h, :-w]
-    denom = np.sqrt(np.maximum(win * te, 1e-12))
+    t = tpl - tpl.mean()
+    t2 = float((t * t).sum())
+    if t2 < 1e-12:
+        return 0.0
+    corr = fftconvolve(scr, t[::-1, ::-1], mode="valid")
+    # 每个窗口各自的均值/方差 (积分图), 严格归一化
+    ii1 = np.zeros((scr.shape[0] + 1, scr.shape[1] + 1))
+    ii1[1:, 1:] = np.cumsum(np.cumsum(scr, axis=0), axis=1)
+    ii2 = np.zeros_like(ii1)
+    ii2[1:, 1:] = np.cumsum(np.cumsum(scr * scr, axis=0), axis=1)
+    n = h * w
+    s1 = ii1[h:, w:] - ii1[:-h, w:] - ii1[h:, :-w] + ii1[:-h, :-w]
+    s2 = ii2[h:, w:] - ii2[:-h, w:] - ii2[h:, :-w] + ii2[:-h, :-w]
+    var = s2 / n - (s1 / n) ** 2
+    denom = np.sqrt(np.maximum(var * n * t2, 1e-12))
     return float((corr / denom).max())
 
 
@@ -968,6 +980,7 @@ class App:
         ttk.Button(test, text="出异色", width=8, command=self._on_test_shiny).grid(row=0, column=3, sticky="w", padx=(6, 0))
         ttk.Button(test, text="+1", width=5, command=self._on_plus_one).grid(row=0, column=4, sticky="w", padx=(10, 0))
         ttk.Button(test, text="打断", width=5, command=self._on_interrupt).grid(row=0, column=5, sticky="w", padx=(6, 0))
+        ttk.Button(test, text="截图", width=10, command=self._on_test_screenshot).grid(row=1, column=0, sticky="w", pady=(4, 0))
 
         row += 1
         self.log_text = tk.Text(frm, height=12, width=66, state="disabled", wrap="word",
@@ -1033,8 +1046,12 @@ class App:
             from ctypes import wintypes
             rect = wintypes.RECT()
             ctypes.windll.user32.GetWindowRect(hwnd, ctypes.byref(rect))
-            return ImageGrab.grab(bbox=(rect.left, rect.top, rect.right, rect.bottom))
-        return ImageGrab.grab()
+            # 多显示器下必须用虚拟桌面, 否则副屏上的窗口截出来是黑的
+            shot = ImageGrab.grab(bbox=(rect.left, rect.top, rect.right, rect.bottom),
+                                  all_screens=True)
+            if shot is not None:
+                return shot
+        return ImageGrab.grab(all_screens=True)
 
     def _find_game_hwnd(self):
         pid = getattr(self, "_game_pid", None)
@@ -1054,7 +1071,46 @@ class App:
             return True
 
         user32.EnumWindows(cb(enum), 0)
-        return found[0] if found else None
+        # 选面积最大的可见窗口(游戏主窗口), 避免抓到辅助小窗口
+        best = None
+        for h in found:
+            r = wintypes.RECT()
+            user32.GetWindowRect(h, ctypes.byref(r))
+            area = (r.right - r.left) * (r.bottom - r.top)
+            if best is None or area > best[0]:
+                best = (area, h)
+        return best[1] if best else None
+
+    def _on_test_screenshot(self):
+        try:
+            shot = self._capture_game()
+        except Exception as e:
+            self._log(f"截图失败: {e}")
+            return
+        try:
+            from PIL import Image, ImageTk
+            sw = self.root.winfo_screenwidth()
+            sh = self.root.winfo_screenheight()
+            img = shot
+            scale = min(1.0, (sw - 120) / img.width, (sh - 120) / img.height)
+            if scale < 1.0:
+                img = img.resize((max(1, int(img.width * scale)), max(1, int(img.height * scale))), Image.LANCZOS)
+            win = tk.Toplevel(self.root)
+            win.title(f"截图测试 {shot.size[0]}x{shot.size[1]} (关闭窗口即可)")
+            photo = ImageTk.PhotoImage(img)
+            win._photo = photo
+            tk.Label(win, image=photo).pack()
+            win.attributes("-topmost", True)
+        except Exception as e:
+            self._log(f"截图显示失败: {e}")
+            return
+        try:
+            save_dir = os.path.dirname(sys.executable) if getattr(sys, "frozen", False) else BASE_DIR
+            save_path = os.path.join(save_dir, "screenshot_test.png")
+            shot.save(save_path)
+            self._log(f"截图已保存: {save_path}")
+        except Exception as e:
+            self._log(f"截图保存失败: {e}")
 
     def _on_test_shiny(self):
         if getattr(self, "_shiny_pending", False):
