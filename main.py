@@ -19,6 +19,7 @@
 import os
 import sys
 import ctypes
+import random
 import queue
 import threading
 import time
@@ -798,6 +799,10 @@ class App:
         self.rate_lock_var = tk.BooleanVar(value=bool(settings.get("rate_lock", 0)))
         self.shiny_var = tk.BooleanVar(value=bool(settings.get("shiny_on", 1)))
         self.sfx_shiny_var = tk.StringVar(value=pick_sfx("sfx_shiny", "关羽小曲"))
+        self.random_success_var = tk.BooleanVar(value=bool(settings.get("random_success", 0)))
+        self.random_fail_var = tk.BooleanVar(value=bool(settings.get("random_fail", 0)))
+        self.random_hit_var = tk.BooleanVar(value=bool(settings.get("random_hit", 0)))
+        self.random_shiny_var = tk.BooleanVar(value=bool(settings.get("random_shiny", 0)))
 
         self.shared = {"success_on": self.success_var.get(),
                        "fail_on": self.fail_var.get(),
@@ -823,6 +828,10 @@ class App:
         _bind(self.rate_lock_var, "rate_lock", False)
         _bind(self.shiny_var, "shiny_on", True)
         _bind(self.sfx_shiny_var, "sfx_shiny", False)
+        _bind(self.random_success_var, "random_success", False)
+        _bind(self.random_fail_var, "random_fail", False)
+        _bind(self.random_hit_var, "random_hit", False)
+        _bind(self.random_shiny_var, "random_shiny", False)
 
         self.evq = queue.Queue()
         self.detector = None
@@ -865,24 +874,35 @@ class App:
         cond = ttk.LabelFrame(frm, text="音效设置", padding=8)
         cond.grid(row=row, column=0, columnspan=2, sticky="ew", pady=(8, 4))
 
-        def combo_row(r, text, chk_var, sfx_var):
+        def combo_row(r, text, chk_var, sfx_var, rnd_var):
             ttk.Checkbutton(cond, text=text, variable=chk_var).grid(row=r, column=0, sticky="w", padx=(0, 8))
             cb = ttk.Combobox(cond, textvariable=sfx_var, values=self.play_sound_disps,
-                              state="readonly", width=18)
+                              state="readonly", width=16)
             cb.grid(row=r, column=1, sticky="w")
             ttk.Button(cond, text="试听", width=5,
                        command=lambda: self._preview_sfx(sfx_var.get())).grid(row=r, column=2, sticky="w", padx=(6, 0))
             ttk.Button(cond, text="中断", width=5, command=self._on_interrupt).grid(row=r, column=3, sticky="w", padx=(4, 0))
+            rnd_cb = ttk.Checkbutton(cond, text="随机", variable=rnd_var)
+            rnd_cb.grid(row=r, column=4, sticky="w", padx=(6, 0))
 
             def sync(*_):
-                cb.state(["!disabled"] if chk_var.get() else ["disabled"])
+                if not chk_var.get():
+                    cb.state(["disabled"])
+                    rnd_cb.state(["disabled"])
+                elif rnd_var.get():
+                    cb.state(["disabled"])   # 随机开启时下拉框失效
+                    rnd_cb.state(["!disabled"])
+                else:
+                    cb.state(["!disabled"])
+                    rnd_cb.state(["!disabled"])
             chk_var.trace_add("write", sync)
+            rnd_var.trace_add("write", sync)
             sync()
 
-        combo_row(0, "捕捉成功", self.success_var, self.sfx_success_var)
-        combo_row(1, "捕捉失败", self.fail_var, self.sfx_fail_var)
-        combo_row(2, "球命中", self.hit_var, self.sfx_hit_var)
-        combo_row(3, "战斗内出异色", self.shiny_var, self.sfx_shiny_var)
+        combo_row(0, "捕捉成功", self.success_var, self.sfx_success_var, self.random_success_var)
+        combo_row(1, "捕捉失败", self.fail_var, self.sfx_fail_var, self.random_fail_var)
+        combo_row(2, "球命中", self.hit_var, self.sfx_hit_var, self.random_hit_var)
+        combo_row(3, "战斗内出异色", self.shiny_var, self.sfx_shiny_var, self.random_shiny_var)
 
         row += 1
         rate_frm = ttk.LabelFrame(frm, text="倍率设置", padding=8)
@@ -984,8 +1004,8 @@ class App:
             self._log(f"图片匹配失败: {e}")
             return
         if score > IMG_MATCH_THRESHOLD:
-            sound = self.sfx_shiny_var.get()
-            disp = sound
+            sound, is_rnd = self._pick_sfx("shiny")
+            disp = sound + (" (随机)" if is_rnd else "")
             self._log(f"检测到异色! (图片匹配度 {score:.2f}), 播放 {disp} ({SHINY_PROTECT_SEC:g}秒内禁止打断)")
             self.player.play(self._current_rate(), self._sound_file(sound), self.flash_var.get(),
                              protect_sec=SHINY_PROTECT_SEC)
@@ -1034,6 +1054,16 @@ class App:
     def _sound_file(self, disp):
         """下拉框显示名 -> 实际文件名"""
         return self._sound_by_disp.get(disp, disp)
+
+    def _pick_sfx(self, name):
+        """按触发类型选音效: 随机开关开启时从全部音效随机选一个; 返回(显示名, 是否随机)"""
+        rnd_var = {"success": self.random_success_var, "fail": self.random_fail_var,
+                   "hit": self.random_hit_var, "shiny": self.random_shiny_var}.get(name)
+        if rnd_var is not None and rnd_var.get() and self.play_sound_disps:
+            return random.choice(self.play_sound_disps), True
+        sel = {"success": self.sfx_success_var.get(), "fail": self.sfx_fail_var.get(),
+               "hit": self.sfx_hit_var.get(), "shiny": self.sfx_shiny_var.get()}.get(name, "狼人")
+        return sel, False
 
     def _preview_sfx(self, disp):
         self._log(f"试听: {disp}")
@@ -1195,7 +1225,8 @@ class App:
             self._log(f"倍率超过上限 {self.max_rate:g}, 倍率回到 {self.min_rate:g} (统计保持 {self.count})")
         rate = self._current_rate()
         self._log(f"检测到「{label}」音效 (波形 {corr:.2f} / 频谱 {spec:.2f}) → 统计 {self.count}, 播放倍率 x{rate:.2f}")
-        self._play_and_flash(rate, name)
+        sound, is_rnd = self._play_and_flash(rate, name)
+        self._log(f"播放音效: {sound}{' (随机)' if is_rnd else ''}")
 
     def _on_plus_one(self):
         if self._increment_count("success"):
@@ -1206,20 +1237,17 @@ class App:
 
     def _play_and_flash(self, rate, name):
         self._update_count_label()
-        sound = {"success": self.sfx_success_var.get(),
-                 "fail": self.sfx_fail_var.get(),
-                 "hit": self.sfx_hit_var.get()}.get(name, "狼人")
+        sound, is_rnd = self._pick_sfx(name)
         self.player.play(rate, self._sound_file(sound), self.flash_var.get())
         if self.image_var.get():
             self.flash.show(self.black_bg_var.get(), self.user_img)
+        return sound, is_rnd
 
     def _on_test_type(self, name):
         rate = self._current_rate()
         label = {"success": "捕捉成功", "fail": "捕捉失败", "hit": "球命中"}.get(name, name)
-        sound = {"success": self.sfx_success_var.get(),
-                 "fail": self.sfx_fail_var.get(),
-                 "hit": self.sfx_hit_var.get()}.get(name, "狼人")
-        disp = sound
+        sound, is_rnd = self._pick_sfx(name)
+        disp = sound + (" (随机)" if is_rnd else "")
         img_on = self.image_var.get()
         self._log(f"测试「{label}」: 闪现音效{'开' if self.flash_var.get() else '关'} + {disp} (倍速 x{rate:.2f})"
                   + (" 并显示图片" if img_on else " (显示图片已关闭)"))
